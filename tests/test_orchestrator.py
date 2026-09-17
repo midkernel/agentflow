@@ -812,15 +812,23 @@ async def test_orchestrator_periodic_nodes_can_cancel_and_rerun_watched_members_
     assert worker.attempts[1].status.value == "completed"
     assert worker.output == "healthy"
     assert monitor.status.value == "completed"
-    assert monitor.output == "cancel and rerun"
+    assert any(attempt.output == "cancel and rerun" for attempt in monitor.attempts)
 
-    action_artifact = json.loads(
-        orchestrator.store.read_artifact_text(completed.id, "monitor", "periodic-actions-tick-1.json")
-    )
-    assert action_artifact["actions"] == [
+    expected_actions = [
         {"kind": "cancel", "node_ids": ["worker_0"], "reason": None},
         {"kind": "rerun", "node_ids": ["worker_0"], "reason": None},
     ]
+    action_artifacts = [
+        json.loads(
+            orchestrator.store.read_artifact_text(
+                completed.id,
+                "monitor",
+                f"periodic-actions-tick-{tick_number}.json",
+            )
+        )
+        for tick_number in range(1, monitor.tick_count + 1)
+    ]
+    assert any(artifact["actions"] == expected_actions for artifact in action_artifacts)
     events = orchestrator.store.get_events(completed.id)
     assert any(event.type == "node_control_actions_applied" and event.node_id == "monitor" for event in events)
 

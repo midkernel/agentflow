@@ -821,7 +821,11 @@ def test_codex_cloud_hypervisor_credentials_are_opt_in(tmp_path: Path, monkeypat
     inherited_prepared = CodexAdapter().prepare(inherited, "hi", paths)
 
     assert isolated_prepared.runtime_symlinks == {}
-    assert "CODEX_HOME" not in isolated_prepared.env
+    assert set(isolated_prepared.runtime_files) == {"codex_home/config.toml"}
+    assert isolated_prepared.env["CODEX_HOME"] == "/agentflow-runtime/codex_home"
+    assert isolated_prepared.env["HOME"] == "/agentflow-runtime/codex_home"
+    assert not any(path.endswith("auth.json") for path in isolated_prepared.runtime_files)
+    assert not any(path.endswith("auth.json") for path in isolated_prepared.runtime_symlinks)
     assert inherited_prepared.runtime_symlinks == {
         "codex_home/config.toml": str(codex_home / "config.toml"),
         "codex_home/auth.json": str(codex_home / "auth.json"),
