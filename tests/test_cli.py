@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -26,6 +27,11 @@ from agentflow.specs import ProviderConfig
 from agentflow.inference import SkyInferenceLaunch, SkyInferenceService
 
 runner = CliRunner()
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain_cli_output(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
 
 
 @pytest.fixture(autouse=True)
@@ -580,7 +586,7 @@ def test_init_command_rejects_template_settings_for_static_template():
     result = runner.invoke(app, ["init", "--template", "pipeline", "--set", "shards=64"])
 
     assert result.exit_code != 0
-    assert "template `pipeline` does not accept `--set` values" in result.stderr
+    assert "template `pipeline` does not accept `--set` values" in _plain_cli_output(result.stderr)
 
 
 def test_python_module_entrypoint_displays_help():
@@ -755,21 +761,21 @@ def test_inference_command_rejects_bad_gpu_selector():
     result = runner.invoke(app, ["inference", "model", "--gpu", "aws:8x"])
 
     assert result.exit_code != 0
-    assert "Invalid value for --gpu" in result.stderr
+    assert "Invalid value for --gpu" in _plain_cli_output(result.stderr)
 
 
 def test_inference_command_rejects_workers_without_pool():
     result = runner.invoke(app, ["inference", "model", "--mode", "batch", "--gpu", "1xl4", "--workers", "2"])
 
     assert result.exit_code != 0
-    assert "Invalid value for --workers" in result.stderr
+    assert "Invalid value for --workers" in _plain_cli_output(result.stderr)
 
 
 def test_inference_command_rejects_batch_inputs_in_service_mode():
     result = runner.invoke(app, ["inference", "model", "--gpu", "1xl4", "--prompt", "hi"])
 
     assert result.exit_code != 0
-    assert "`--prompt`" in result.stderr
+    assert "`--prompt`" in _plain_cli_output(result.stderr)
     assert "`--mode batch`" in result.stderr
 
 
