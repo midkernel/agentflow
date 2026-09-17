@@ -14,9 +14,25 @@ concurrency:
 
 jobs:
   pytest:
-    name: AgentFlow tests
+    name: AgentFlow tests (${{ matrix.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cli
+            tests: tests/test_cli.py
+          - name: runners
+            tests: tests/test_runners.py
+          - name: doctor
+            tests: tests/test_doctor.py tests/test_cli_auto_preflight.py tests/test_cli_bash_rcfile_auth.py tests/test_toolchain_local.py
+          - name: targets
+            tests: tests/test_cloud_hypervisor_target.py tests/test_docker_target.py tests/test_local_shell.py
+          - name: orchestration
+            tests: tests/test_orchestrator.py tests/test_lifecycle.py tests/test_store_and_validation.py tests/test_traces.py tests/test_success.py tests/test_prepared.py
+          - name: core
+            tests: tests/test_actor_profiles.py tests/test_agents.py tests/test_api.py tests/test_context.py tests/test_defaults.py tests/test_dsl.py tests/test_extensions.py tests/test_graph_optimizer.py tests/test_inference.py tests/test_inspection.py tests/test_loader.py tests/test_pipeline_paths.py tests/test_skills.py tests/test_terminus_bridge.py tests/test_tuned_agents.py
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,4 +47,6 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input -e '.[dev]'
 
       - name: Run tests
-        run: python -m pytest -q
+        env:
+          TEST_FILES: ${{ matrix.tests }}
+        run: python -m pytest -q ${TEST_FILES}
