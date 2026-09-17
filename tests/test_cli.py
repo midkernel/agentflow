@@ -776,7 +776,7 @@ def test_inference_command_rejects_batch_inputs_in_service_mode():
 
     assert result.exit_code != 0
     assert "`--prompt`" in _plain_cli_output(result.stderr)
-    assert "`--mode batch`" in result.stderr
+    assert "`--mode batch`" in _plain_cli_output(result.stderr)
 
 
 def test_render_doctor_summary_appends_bash_startup_summary_suffix():
