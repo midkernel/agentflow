@@ -960,7 +960,7 @@ def test_pipeline_local_kimi_readiness_check_reports_timeout(monkeypatch):
                 id="kimi_review",
                 agent=SimpleNamespace(value="kimi"),
                 provider=None,
-                env={},
+                env={"KIMI_API_KEY": "test-kimi-key"},
                 executable="python-kimi",
                 target=SimpleNamespace(
                     kind="local",

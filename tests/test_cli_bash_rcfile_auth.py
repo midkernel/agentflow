@@ -81,6 +81,8 @@ def test_doctor_with_pipeline_path_accepts_provider_credentials_from_interactive
         encoding="utf-8",
     )
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(agentflow.cli, "build_pipeline_local_claude_readiness_checks", lambda pipeline: [])
+    monkeypatch.setattr(agentflow.cli, "build_pipeline_local_claude_readiness_info_checks", lambda pipeline: [])
 
     result = runner.invoke(app, ["doctor", str(pipeline_path), "--output", "summary"])
 

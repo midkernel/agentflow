@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -26,12 +27,29 @@ from agentflow.specs import ProviderConfig
 from agentflow.inference import SkyInferenceLaunch, SkyInferenceService
 
 runner = CliRunner()
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain_cli_output(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
 
 
 @pytest.fixture(autouse=True)
-def _clear_ambient_base_url_env(monkeypatch):
+def _clear_ambient_base_url_env(monkeypatch, tmp_path):
+    home = tmp_path / "test-home"
+    home.mkdir()
+    (home / ".profile").write_text(
+        'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n',
+        encoding="utf-8",
+    )
+    (home / ".bashrc").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    # CLI tests exercise command orchestration and mock readiness explicitly
+    # when it is under test; do not depend on host-installed agent binaries.
+    _disable_local_readiness_failures(monkeypatch)
 
 
 def _capture_pipeline_loader(captured: dict[str, object], fake_pipeline: object):
@@ -165,15 +183,105 @@ def _bash_startup_context(
 
 
 
-def _disable_local_readiness_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+def _disable_local_readiness_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_kimi_readiness_checks", lambda pipeline: [])
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_claude_readiness_checks", lambda pipeline: [])
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_codex_readiness_checks", lambda pipeline: [])
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_codex_auth_checks", lambda pipeline: [])
+
+
+def _disable_local_readiness_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _disable_local_readiness_failures(monkeypatch)
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_kimi_readiness_info_checks", lambda pipeline: [])
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_claude_readiness_info_checks", lambda pipeline: [])
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_codex_readiness_info_checks", lambda pipeline: [])
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_codex_auth_info_checks", lambda pipeline: [])
+
+
+def _mock_claude_ready(monkeypatch: pytest.MonkeyPatch, *, node_id: str) -> None:
+    monkeypatch.setattr(
+        agentflow.cli,
+        "build_pipeline_local_claude_readiness_info_checks",
+        lambda pipeline: [
+            DoctorCheck(
+                name="claude_ready",
+                status="ok",
+                detail=(
+                    f"Node `{node_id}` (claude) can launch local Claude after the node shell bootstrap; "
+                    "`claude --version` succeeds in the prepared local shell."
+                ),
+            )
+        ],
+    )
+
+
+def _mock_claude_unavailable(monkeypatch: pytest.MonkeyPatch, *, node_id: str) -> None:
+    monkeypatch.setattr(
+        agentflow.cli,
+        "build_pipeline_local_claude_readiness_checks",
+        lambda pipeline: [
+            DoctorCheck(
+                name="claude_ready",
+                status="failed",
+                detail=(
+                    f"Node `{node_id}` (claude) cannot launch local Claude after the node shell bootstrap; "
+                    "`claude --version` fails in the prepared local shell."
+                ),
+            )
+        ],
+    )
+
+
+def _mock_codex_auth_unavailable(monkeypatch: pytest.MonkeyPatch, *, node_id: str) -> None:
+    monkeypatch.setattr(
+        agentflow.cli,
+        "build_pipeline_local_codex_auth_checks",
+        lambda pipeline: [
+            DoctorCheck(
+                name="codex_auth",
+                status="failed",
+                detail=(
+                    f"Node `{node_id}` (codex) cannot authenticate local Codex after the node shell bootstrap; "
+                    "`codex login status` fails and `OPENAI_API_KEY` is not set in the current environment, "
+                    "`node.env`, or `provider.env`."
+                ),
+            )
+        ],
+    )
+
+
+def _mock_codex_unavailable(monkeypatch: pytest.MonkeyPatch, *, node_id: str) -> None:
+    monkeypatch.setattr(
+        agentflow.cli,
+        "build_pipeline_local_codex_readiness_checks",
+        lambda pipeline: [
+            DoctorCheck(
+                name="codex_ready",
+                status="failed",
+                detail=(
+                    f"Node `{node_id}` (codex) cannot launch local Codex after the node shell bootstrap; "
+                    "`codex --version` fails in the prepared local shell."
+                ),
+            )
+        ],
+    )
+
+
+def _mock_kimi_unavailable(monkeypatch: pytest.MonkeyPatch, *, node_id: str, executable: str) -> None:
+    monkeypatch.setattr(
+        agentflow.cli,
+        "build_pipeline_local_kimi_readiness_checks",
+        lambda pipeline: [
+            DoctorCheck(
+                name="kimi_ready",
+                status="failed",
+                detail=(
+                    f"Node `{node_id}` (kimi) cannot find the Kimi CLI after the node shell bootstrap; "
+                    f"`{executable} --version` fails in the prepared local shell."
+                ),
+            )
+        ],
+    )
 
 
 def _mock_local_readiness_info(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -478,7 +586,7 @@ def test_init_command_rejects_template_settings_for_static_template():
     result = runner.invoke(app, ["init", "--template", "pipeline", "--set", "shards=64"])
 
     assert result.exit_code != 0
-    assert "template `pipeline` does not accept `--set` values" in result.stderr
+    assert "template `pipeline` does not accept `--set` values" in _plain_cli_output(result.stderr)
 
 
 def test_python_module_entrypoint_displays_help():
@@ -653,22 +761,22 @@ def test_inference_command_rejects_bad_gpu_selector():
     result = runner.invoke(app, ["inference", "model", "--gpu", "aws:8x"])
 
     assert result.exit_code != 0
-    assert "Invalid value for --gpu" in result.stderr
+    assert "Invalid value for --gpu" in _plain_cli_output(result.stderr)
 
 
 def test_inference_command_rejects_workers_without_pool():
     result = runner.invoke(app, ["inference", "model", "--mode", "batch", "--gpu", "1xl4", "--workers", "2"])
 
     assert result.exit_code != 0
-    assert "Invalid value for --workers" in result.stderr
+    assert "Invalid value for --workers" in _plain_cli_output(result.stderr)
 
 
 def test_inference_command_rejects_batch_inputs_in_service_mode():
     result = runner.invoke(app, ["inference", "model", "--gpu", "1xl4", "--prompt", "hi"])
 
     assert result.exit_code != 0
-    assert "`--prompt`" in result.stderr
-    assert "`--mode batch`" in result.stderr
+    assert "`--prompt`" in _plain_cli_output(result.stderr)
+    assert "`--mode batch`" in _plain_cli_output(result.stderr)
 
 
 def test_render_doctor_summary_appends_bash_startup_summary_suffix():
@@ -3640,6 +3748,7 @@ def test_run_auto_preflight_stops_when_local_codex_auth_is_unavailable(monkeypat
 
     _reject_bundled_smoke_doctor(monkeypatch)
     monkeypatch.setattr(agentflow.cli, "build_local_kimi_bootstrap_doctor_report", lambda: _custom_kimi_preflight_report())
+    _mock_codex_auth_unavailable(monkeypatch, node_id="codex_plan")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     def fake_run(*args, **kwargs):
@@ -3699,6 +3808,7 @@ def test_run_auto_preflight_stops_when_local_codex_is_unavailable_after_shell_bo
 
     _reject_bundled_smoke_doctor(monkeypatch)
     monkeypatch.setattr(agentflow.cli, "build_local_kimi_bootstrap_doctor_report", lambda: _custom_kimi_preflight_report())
+    _mock_codex_unavailable(monkeypatch, node_id="codex_plan")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setattr(
         subprocess,
@@ -3751,6 +3861,7 @@ def test_run_auto_preflight_stops_when_local_claude_is_unavailable_after_shell_b
 
     _reject_bundled_smoke_doctor(monkeypatch)
     monkeypatch.setattr(agentflow.cli, "build_local_kimi_bootstrap_doctor_report", lambda: _custom_kimi_preflight_report())
+    _mock_claude_unavailable(monkeypatch, node_id="claude_review")
     monkeypatch.setattr(subprocess, "run", _completed_subprocess(returncode=1))
     monkeypatch.setattr(
         agentflow.cli,
@@ -6302,6 +6413,7 @@ def test_doctor_with_pipeline_path_fails_when_local_claude_is_unavailable_after_
     captured: dict[str, object] = {}
 
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_unavailable(monkeypatch, node_id="claude_review")
     monkeypatch.setattr(subprocess, "run", _completed_subprocess(returncode=1))
     fake_pipeline = SimpleNamespace(
         nodes=[
@@ -6343,6 +6455,7 @@ def test_doctor_with_pipeline_path_fails_when_local_codex_auth_is_unavailable(mo
     captured: dict[str, object] = {}
 
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_codex_auth_unavailable(monkeypatch, node_id="codex_plan")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     def fake_run(*args, **kwargs):
@@ -6478,6 +6591,7 @@ def test_doctor_with_pipeline_path_accepts_local_codex_login_for_explicit_openai
 
 def test_doctor_with_pipeline_path_uses_codex_auth_failure_for_explicit_openai_provider(monkeypatch):
     captured: dict[str, object] = {}
+    _mock_codex_auth_unavailable(monkeypatch, node_id="codex_plan")
 
     def fake_run(*args, **kwargs):
         command = args[0]
@@ -6657,6 +6771,7 @@ def test_doctor_with_pipeline_path_accepts_custom_kimi_provider_credentials_from
     captured: dict[str, object] = {}
 
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="claude_review")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     fake_pipeline = SimpleNamespace(
         nodes=[
@@ -6700,6 +6815,7 @@ def test_doctor_with_pipeline_path_accepts_custom_kimi_provider_env_base_url_cre
     captured: dict[str, object] = {}
 
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="claude_review")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     fake_pipeline = SimpleNamespace(
         nodes=[
@@ -7536,6 +7652,7 @@ def test_doctor_with_pipeline_path_fails_when_kimi_cli_is_unavailable(monkeypatc
     captured: dict[str, object] = {}
 
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_kimi_unavailable(monkeypatch, node_id="kimi_review", executable="python-kimi")
     monkeypatch.setattr(subprocess, "run", _completed_subprocess(returncode=1))
     monkeypatch.delenv("KIMI_API_KEY", raising=False)
     fake_pipeline = SimpleNamespace(
@@ -7681,6 +7798,7 @@ def test_doctor_with_pipeline_path_reports_expected_launch_env_override_as_ok(tm
         encoding="utf-8",
     )
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="review")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "super-secret")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://open.bigmodel.cn/api/anthropic")
 
@@ -7703,6 +7821,7 @@ def test_doctor_with_pipeline_path_reports_bootstrap_auth_override_as_ok(tmp_pat
         encoding="utf-8",
     )
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="review")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "super-secret")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://open.bigmodel.cn/api/anthropic")
 
@@ -7726,6 +7845,7 @@ def test_doctor_with_pipeline_path_keeps_bootstrap_auth_override_when_kimi_base_
         encoding="utf-8",
     )
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="review")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "super-secret")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.kimi.com/coding/")
 
@@ -7763,6 +7883,7 @@ def test_doctor_with_pipeline_path_json_includes_launch_env_override_context(tmp
         encoding="utf-8",
     )
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="review")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "super-secret")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://open.bigmodel.cn/api/anthropic")
 
@@ -7812,6 +7933,7 @@ def test_doctor_with_pipeline_path_json_includes_bootstrap_auth_override_context
         encoding="utf-8",
     )
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="review")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "super-secret")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://open.bigmodel.cn/api/anthropic")
 
@@ -7861,6 +7983,7 @@ def test_doctor_with_pipeline_path_reports_bootstrap_auth_override_for_launch_se
         encoding="utf-8",
     )
     _mock_custom_kimi_preflight(monkeypatch)
+    _mock_claude_ready(monkeypatch, node_id="review")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
 
@@ -8739,12 +8862,19 @@ print(json.dumps({\"exit_code\": result.exit_code, \"stdout\": result.stdout}))
 
 
 def test_run_command_executes_local_kimi_node_when_pipeline_lives_outside_repo(tmp_path, monkeypatch):
-    pipeline_path = tmp_path / "kimi-only.json"
-    pipeline_path.write_text(
-        json.dumps({"name": 'kimi-only', "working_dir": '.', "nodes": [{"id": 'review', "agent": 'kimi', "prompt": 'Reply with exactly: kimi ok\n', "timeout_seconds": 30, "success_criteria": [{"kind": 'output_contains', "value": 'kimi ok'}]}]}),
+    mock_kimi = tmp_path / "kimi"
+    mock_kimi.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "print(json.dumps({'role': 'assistant', 'content': 'kimi ok'}))\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("AGENTFLOW_KIMI_MOCK_RESPONSE", "kimi ok")
+    mock_kimi.chmod(0o755)
+    pipeline_path = tmp_path / "kimi-only.json"
+    pipeline_path.write_text(
+        json.dumps({"name": 'kimi-only', "working_dir": '.', "nodes": [{"id": 'review', "agent": 'kimi', "executable": str(mock_kimi), "prompt": 'Reply with exactly: kimi ok\n', "timeout_seconds": 30, "success_criteria": [{"kind": 'output_contains', "value": 'kimi ok'}]}]}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("KIMI_API_KEY", "super-secret")
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_kimi_readiness_checks", lambda pipeline: [])
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_kimi_readiness_info_checks", lambda pipeline: [])
