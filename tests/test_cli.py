@@ -29,7 +29,16 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _clear_ambient_base_url_env(monkeypatch):
+def _clear_ambient_base_url_env(monkeypatch, tmp_path):
+    home = tmp_path / "test-home"
+    home.mkdir()
+    (home / ".profile").write_text(
+        'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n',
+        encoding="utf-8",
+    )
+    (home / ".bashrc").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
     # CLI tests exercise command orchestration and mock readiness explicitly

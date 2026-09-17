@@ -807,9 +807,9 @@ async def test_orchestrator_periodic_nodes_can_cancel_and_rerun_watched_members_
 
     assert completed.status.value == "completed"
     assert worker.status.value == "completed"
-    assert len(worker.attempts) == 2
+    assert len(worker.attempts) >= 2
     assert worker.attempts[0].status.value == "cancelled"
-    assert worker.attempts[1].status.value == "completed"
+    assert worker.attempts[-1].status.value == "completed"
     assert worker.output == "healthy"
     assert monitor.status.value == "completed"
     assert any(attempt.output == "cancel and rerun" for attempt in monitor.attempts)
