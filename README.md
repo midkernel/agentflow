@@ -1,3 +1,5 @@
+This is Midkernel's fork of [agentenv/agentflow](https://github.com/agentenv/agentflow), a graph orchestrator for agent workflows. The open [Midkernel Scan](https://www.midkernel.com/security/scan) workflows are in [midkernel/playbooks](https://github.com/midkernel/playbooks). For the original project, use the upstream repo. More at [midkernel.com/security/open-source](https://www.midkernel.com/security/open-source).
+
 # AgentFlow
 
 Orchestrate Codex, Claude, Kimi, and Pi agents in dependency graphs with parallel fanout, iterative cycles, and execution on local Docker, SSH, EC2, or ECS targets.
