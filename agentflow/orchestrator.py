@@ -1125,6 +1125,9 @@ class Orchestrator:
                 result.final_response = "\n".join(attempt_stdout_lines).strip()
             result.output = result.final_response if execution_node.capture.value == "final" else "\n".join(attempt_stdout_lines)
             success_ok, success_details = evaluate_success(execution_node, result, paths.host_workdir)
+            if parser.failure:
+                success_ok = False
+                success_details = [*success_details, f"agent reported failure: {parser.failure}"]
             result.success = success_ok
             result.success_details = success_details
             attempt.finished_at = utcnow_iso()

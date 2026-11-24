@@ -40,6 +40,7 @@ class AgentKind(StrEnum):
     CLAUDE = "claude"
     KIMI = "kimi"
     PI = "pi"
+    ANTIGRAVITY = "antigravity"
     TERMINUS = "terminus"
     PYTHON = "python"
     SHELL = "shell"

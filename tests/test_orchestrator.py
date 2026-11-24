@@ -1437,3 +1437,44 @@ async def test_cycle_tail_success_does_not_block_downstream_skip(tmp_path: Path)
     assert completed.nodes["fail_always"].status.value == "failed"
     assert completed.nodes["downstream"].status.value == "skipped"
     assert completed.status.value in {"completed", "failed"}
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_fails_antigravity_node_when_agy_reports_error_status(tmp_path: Path):
+    class ErrorStatusAntigravityAdapter(AgentAdapter):
+        def prepare(self, node, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
+            script = r'''
+import json
+
+print(json.dumps({"event": "step_update", "step_update": {"step_index": 1, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "partial"}}))
+print(json.dumps({"event": "result", "result": {"status": "ERROR", "response": "", "error": "quota exhausted", "finished_reason": "error"}}))
+raise SystemExit(0)
+'''
+            return PreparedExecution(
+                command=["python3", "-c", script],
+                env={},
+                cwd=paths.target_workdir,
+                trace_kind="antigravity",
+            )
+
+    adapters = AdapterRegistry()
+    adapters.register(AgentKind.ANTIGRAVITY, ErrorStatusAntigravityAdapter())
+    orchestrator = Orchestrator(store=RunStore(tmp_path / "runs"), adapters=adapters, runners=RunnerRegistry())
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "antigravity-error-status",
+            "working_dir": str(tmp_path),
+            "nodes": [{"id": "ask", "agent": "antigravity", "prompt": "Reply PONG"}],
+        }
+    )
+
+    run = await orchestrator.submit(pipeline)
+    completed = await orchestrator.wait(run.id, timeout=5)
+    node = completed.nodes["ask"]
+
+    assert node.exit_code == 0
+    assert node.status.value == "failed"
+    assert node.success is False
+    assert node.final_response == "partial"
+    assert node.success_details[-1] == "agent reported failure: quota exhausted (finished_reason=error)"
+    assert any(event.kind == "error" for event in node.trace_events)

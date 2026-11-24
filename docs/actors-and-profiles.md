@@ -43,10 +43,13 @@ backend settings. Instruction rendering should be pure and deterministic.
 validates requested features before producing `NodeSpec` fields. Call it during
 preflight, before provisioning resources. Profiles keep model/provider settings,
 MCP declarations, skills, extensions, secret references, and timeouts independent
-of workflow configuration. `BACKEND_CAPABILITIES` covers Codex, Claude, Pi, and
-Harbor Terminus 2. Pi and Terminus reject MCP declarations; Terminus also rejects
-read-only tool access and CLI arguments. Pi token limits require an explicit
-custom provider and model. Unsupported settings and protocols raise errors.
+of workflow configuration. `BACKEND_CAPABILITIES` covers Codex, Claude, Pi,
+Antigravity, and Harbor Terminus 2. Pi, Antigravity, and Terminus reject MCP
+declarations; Terminus also rejects read-only tool access and CLI arguments. Pi
+token limits require an explicit custom provider and model. Antigravity accepts
+only `reasoning_effort` among model settings and only `local` and `ssh` targets,
+because `agy` uses the host's own sign-in. Unsupported settings and protocols
+raise errors.
 
 Trusted backend extensions can register their adapter in `AdapterRegistry` and
 capabilities using `register_backend_capabilities`. Custom names survive graph and

@@ -45,6 +45,9 @@ class BaseTraceParser:
     attempt: int = 1
     final_chunks: list[str] = field(default_factory=list)
     last_message: str | None = None
+    # Set when the agent itself reports that the attempt failed (for example a
+    # terminal status event), even if the process exited 0.
+    failure: str | None = None
 
     def emit(self, kind: str, title: str, content: str | None = None, raw: Any | None = None, source: str = "stdout") -> NormalizedTraceEvent:
         return NormalizedTraceEvent(
@@ -62,6 +65,7 @@ class BaseTraceParser:
         self.attempt = attempt
         self.final_chunks.clear()
         self.last_message = None
+        self.failure = None
 
     def remember(self, text: str | None) -> None:
         if text:
@@ -344,6 +348,123 @@ class PiTraceParser(BaseTraceParser):
 
 
 @dataclass(slots=True)
+class AntigravityTraceParser(BaseTraceParser):
+    """Parser for ``agy --print --output-format stream-json``.
+
+    ``agy`` emits one NDJSON object per line, keyed by ``event``:
+
+    - ``init``: session metadata (model, cwd, tools, permission mode).
+    - ``step_update``: one per step state change. ``step_type`` is ``user_input``,
+      ``agent_response`` (with ``text_delta`` chunks while ``ACTIVE``, ``usage`` when
+      ``DONE``), ``tool`` (``tool_name`` / ``tool_info``) or ``finish``.
+    - ``result``: the terminal event with ``status`` (``SUCCESS`` or ``ERROR``),
+      the full ``response`` text, ``usage``, and on failure ``error`` plus
+      ``finished_reason`` (e.g. ``print_timeout``). With ``--json-schema`` it also
+      carries ``structured_output``; tools refused in headless mode are listed in
+      ``denied_actions``.
+
+    The ``result`` event is authoritative for the final text; streamed deltas are
+    only a fallback when the process dies before emitting it.
+    """
+
+    deltas: list[str] = field(default_factory=list)
+    response: str | None = None
+    usage: dict[str, Any] | None = None
+    status: str | None = None
+
+    def supports_raw_stdout_fallback(self) -> bool:
+        return False
+
+    def start_attempt(self, attempt: int) -> None:
+        BaseTraceParser.start_attempt(self, attempt)
+        self.deltas.clear()
+        self.response = None
+        self.usage = None
+        self.status = None
+
+    def finalize(self) -> str:
+        if self.response is not None:
+            return self.response.strip()
+        return "".join(self.deltas).strip()
+
+    def _step_event(self, payload: dict[str, Any]) -> list[NormalizedTraceEvent]:
+        step = payload.get("step_update") or {}
+        step_type = str(step.get("step_type") or "step")
+        state = str(step.get("state") or "")
+        if step_type == "agent_response":
+            delta = step.get("text_delta")
+            events: list[NormalizedTraceEvent] = []
+            if isinstance(delta, str) and delta:
+                self.deltas.append(delta)
+                events.append(self.emit("assistant_delta", "Assistant delta", delta, payload))
+            if state == "DONE":
+                events.append(self.emit("assistant_step_done", "Assistant step done", None, payload))
+            return events
+        if step_type == "tool":
+            tool_name = step.get("tool_name") or (step.get("tool_info") or {}).get("name") or "tool"
+            tool_info = step.get("tool_info") or {}
+            if state == "DONE":
+                content = _stringify(tool_info.get("output")) or None
+                return [self.emit("tool_result", f"Tool result: {tool_name}", content, payload)]
+            if state == "ERROR":
+                content = _stringify(tool_info.get("error")) or None
+                return [self.emit("tool_error", f"Tool error: {tool_name}", content, payload)]
+            parameters = tool_info.get("parameters")
+            content = json.dumps(parameters, ensure_ascii=False) if parameters else None
+            return [self.emit("tool_call", f"Tool call: {tool_name}", content, payload)]
+        return [self.emit("step", f"Step {state.lower() or 'update'}: {step_type}", None, payload)]
+
+    def _result_event(self, payload: dict[str, Any]) -> list[NormalizedTraceEvent]:
+        result = payload.get("result") or {}
+        self.status = str(result.get("status") or "")
+        response = result.get("response")
+        if isinstance(response, str) and response.strip():
+            self.response = response
+        elif result.get("structured_output") is not None:
+            self.response = json.dumps(result["structured_output"], ensure_ascii=False)
+        elif self.status == "SUCCESS":
+            self.response = response if isinstance(response, str) else ""
+        if self.response:
+            self.remember(self.response)
+        usage = result.get("usage")
+        if isinstance(usage, dict):
+            self.usage = dict(usage)
+        events: list[NormalizedTraceEvent] = []
+        if self.status != "SUCCESS":
+            reason = result.get("finished_reason")
+            error = str(result.get("error") or "").strip() or f"agy finished with status {self.status or 'unknown'}"
+            self.failure = f"{error} (finished_reason={reason})" if reason else error
+            events.append(self.emit("error", f"Antigravity {self.status or 'failure'}", self.failure, payload))
+        else:
+            events.append(self.emit("result", "Result", self.finalize(), payload))
+        denied = result.get("denied_actions")
+        if isinstance(denied, list) and denied:
+            names = ", ".join(str(item.get("action") if isinstance(item, dict) else item) for item in denied)
+            events.append(self.emit("denied_actions", "Denied actions", names, denied))
+        if self.usage is not None:
+            summary = ", ".join(f"{key}={value}" for key, value in self.usage.items())
+            events.append(self.emit("usage", "Usage", summary, self.usage))
+        return events
+
+    def feed(self, line: str) -> list[NormalizedTraceEvent]:
+        payload = _json(line)
+        if not isinstance(payload, dict):
+            text = line.rstrip()
+            return [self.emit("stdout", "stdout", text, line)] if text else []
+
+        event_type = payload.get("event")
+        if event_type == "step_update":
+            return self._step_event(payload)
+        if event_type == "result":
+            return self._result_event(payload)
+        if event_type == "init":
+            init = payload.get("init") or {}
+            detail = f"model={init.get('model')} permission_mode={init.get('permission_mode')}"
+            return [self.emit("init", "Init", detail, payload)]
+        return [self.emit("event", str(event_type or "antigravity"), _stringify(payload), payload)]
+
+
+@dataclass(slots=True)
 class GenericTraceParser(BaseTraceParser):
     def feed(self, line: str) -> list[NormalizedTraceEvent]:
         text = line.rstrip()
@@ -361,4 +482,6 @@ def create_trace_parser(agent: AgentKind | str, node_id: str) -> BaseTraceParser
             return KimiTraceParser(node_id=node_id, agent=agent)
         case AgentKind.PI:
             return PiTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.ANTIGRAVITY:
+            return AntigravityTraceParser(node_id=node_id, agent=agent)
     return GenericTraceParser(node_id=node_id, agent=agent)
