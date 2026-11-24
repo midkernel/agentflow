@@ -2,7 +2,7 @@ This is Midkernel's fork of [agentenv/agentflow](https://github.com/agentenv/age
 
 # AgentFlow
 
-Orchestrate Codex, Claude, Kimi, and Pi agents in dependency graphs with parallel fanout, iterative cycles, and execution on local Docker, SSH, EC2, or ECS targets.
+Orchestrate Codex, Claude, Kimi, Pi, and Antigravity agents in dependency graphs with parallel fanout, iterative cycles, and execution on local Docker, SSH, EC2, or ECS targets.
 
 Typed actor nodes, explicit agent profiles, credential-safe Docker preparation,
 and the Harbor Terminus 2 adapter are described in
@@ -134,6 +134,45 @@ with Graph("mixed") as g:
 For one-off inline provider configs (e.g. a remote LMStudio box), pass a full
 `ProviderConfig` via `provider={...}` and AgentFlow materializes a scoped
 `models.json` for the run. See `examples/pi_local_lmstudio.py`.
+
+## Google Antigravity (`agy`)
+
+Use `antigravity(...)` to run Google's Antigravity CLI headless
+(`agy --print ... --output-format stream-json`). Sign in once with `agy` on the
+host; AgentFlow never reads or forwards that login. `agy models` lists the
+model ids.
+
+```python
+from agentflow import Graph, antigravity
+
+with Graph("agy") as g:
+    answer = antigravity(
+        task_id="capital",
+        prompt="Give the capital of France.",
+        model="gemini-4-neon-xhigh",
+        effort="high",                 # --effort low|medium|high|xhigh|max
+        tools="read_write",            # --dangerously-skip-permissions
+        timeout_seconds=5400,          # also sets --print-timeout (minus a short grace)
+        json_schema={"type": "object", "properties": {"capital": {"type": "string"}}},
+        add_dirs=["/data/reference"],  # one --add-dir each
+    )
+```
+
+- `tools="read_only"` (the default) runs `agy --mode plan`: the agent can read the
+  workspace but not edit it, and it replies by drafting an implementation plan
+  (saved in agy's own state directory) instead of answering directly. Use
+  `read_write` for nodes that must reply with a direct answer or edit files.
+- The node's final output is the `response` of agy's terminal `result` event;
+  token usage is recorded as a `usage` trace event. A `result` whose `status` is
+  not `SUCCESS` (for example `finished_reason: print_timeout`) fails the node
+  even if `agy` exits 0.
+- `repo_instructions_mode="ignore"` launches from the node runtime dir, adds the
+  workspace with `--add-dir`, and passes `--disable-slash-commands`.
+- `sandbox=True` and `settings={...}` map to `--sandbox` and `--settings`;
+  `extra_args` are appended last. MCP servers (`mcps`) are rejected; configure them
+  with `agy mcp`. Only `local` and `ssh` targets are supported.
+
+See `examples/antigravity_smoke.py`.
 
 ## Inference via SkyPilot
 
@@ -356,6 +395,7 @@ Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/
 | `multi_agent_debate.py` | Codex vs Claude: independent solve + cross-critique |
 | `release_check.py` | Parallel release gate: tests + security + changelog |
 | `iterative_impl.py` | Write → review → fix cycle until LGTM |
+| `antigravity_smoke.py` | Two tiny Google Antigravity (`agy`) calls, one schema-constrained |
 | `airflow_like_fuzz_batched.py` | 128-shard fanout with batch merge + periodic monitor |
 | `airflow_like_fuzz_grouped.py` | Matrix fanout with grouped reducers |
 | `ec2_remote.py` | Run codex on a remote EC2 instance |

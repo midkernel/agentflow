@@ -431,6 +431,53 @@ def pi(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     return _node(AgentKind.PI, task_id=task_id, prompt=prompt, **kwargs)
 
 
+def antigravity(
+    *,
+    task_id: str,
+    prompt: str,
+    effort: str | None = None,
+    json_schema: dict[str, Any] | str | None = None,
+    add_dirs: list[str] | tuple[str, ...] | None = None,
+    sandbox: bool = False,
+    settings: dict[str, Any] | str | None = None,
+    **kwargs: Any,
+) -> NodeBuilder:
+    """Run Google's Antigravity CLI (``agy``) headless.
+
+    ``model`` takes an ``agy models`` id such as ``"gemini-4-neon-xhigh"``.
+    ``tools="read_only"`` (the default) runs ``agy --mode plan``;
+    ``tools="read_write"`` runs with ``--dangerously-skip-permissions``.
+    ``timeout_seconds`` also bounds ``agy --print-timeout``.
+
+    Convenience keywords are translated into ``agy`` flags placed ahead of any
+    caller-supplied ``extra_args`` (so ``extra_args`` can still override them):
+
+    - ``effort`` -> ``model_settings.reasoning_effort`` -> ``--effort``
+    - ``json_schema`` (dict or JSON string / schema file path) -> ``--json-schema``
+    - ``add_dirs`` -> one ``--add-dir`` per entry
+    - ``sandbox=True`` -> ``--sandbox``
+    - ``settings`` (dict or JSON string / file path) -> ``--settings``
+    """
+    flags: list[str] = []
+    if json_schema is not None:
+        schema = json_schema if isinstance(json_schema, str) else json.dumps(json_schema, separators=(",", ":"))
+        flags.extend(["--json-schema", schema])
+    for directory in add_dirs or ():
+        flags.extend(["--add-dir", str(directory)])
+    if sandbox:
+        flags.append("--sandbox")
+    if settings is not None:
+        rendered = settings if isinstance(settings, str) else json.dumps(settings, separators=(",", ":"))
+        flags.extend(["--settings", rendered])
+    if flags:
+        kwargs["extra_args"] = [*flags, *kwargs.get("extra_args", [])]
+    if effort is not None:
+        model_settings = dict(kwargs.get("model_settings") or {})
+        model_settings["reasoning_effort"] = effort
+        kwargs["model_settings"] = model_settings
+    return _node(AgentKind.ANTIGRAVITY, task_id=task_id, prompt=prompt, **kwargs)
+
+
 def python_node(*, task_id: str, code: str, **kwargs: Any) -> NodeBuilder:
     """Run Python code directly. The ``code`` is executed as ``python3 -c <code>``."""
     return _node(AgentKind.PYTHON, task_id=task_id, prompt=code, **kwargs)

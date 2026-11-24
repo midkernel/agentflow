@@ -40,7 +40,7 @@ See `examples/airflow_like.py` for the small static DAG. `examples/airflow_like_
 
 Each node supports:
 
-- `agent`: `codex`, `claude`, `kimi`, or `pi`; utility nodes also use `python`, `shell`, and `sync`
+- `agent`: `codex`, `claude`, `kimi`, `pi`, or `antigravity`; utility nodes also use `python`, `shell`, and `sync`
 - `fanout`: `count`, `values`, `matrix`, `group_by`, or `batches`, plus optional `as`, `derive`, and matrix-only `include` / `exclude`
 - `schedule`: optional periodic execution for local nodes with `every_seconds`, `until_fanout_settles_from`, and optional `actuation`
 - `model`: any model string understood by the backend
@@ -820,3 +820,14 @@ choosing between `container` and `docker`.
 - Emits a Kimi-style JSON-RPC event stream
 - Calls Moonshot's OpenAI-compatible chat completions API
 - Provides a small built-in tool layer for read, search, write, and shell actions
+
+### Antigravity
+
+- Uses `agy --print <prompt> --output-format stream-json --print-timeout <timeout_seconds - grace>`; the grace (1-30s) lets agy emit its final `result` event before AgentFlow's hard kill
+- `tools: read_only` maps to `--mode plan` (reads allowed, no workspace edits, plan-style replies); `read_write` maps to `--dangerously-skip-permissions`
+- `model` maps to `--model` and `model_settings.reasoning_effort` (`low`, `medium`, `high`, `xhigh`, `max`) to `--effort`; other `model_settings` are rejected
+- `repo_instructions_mode: ignore` runs from the node runtime dir with `--add-dir <workdir> --disable-slash-commands`
+- `extra_args` are appended last, so `--json-schema`, `--add-dir`, `--sandbox`, `--settings`, or `--mode` can be passed from YAML/JSON pipelines; the Python `antigravity()` helper adds `json_schema=`, `add_dirs=`, `sandbox=`, `settings=`, and `effort=` shortcuts
+- The final output is the terminal `result.response` (or `result.structured_output` when the response is empty); usage is recorded as a `usage` trace event
+- A `result.status` other than `SUCCESS` fails the node with `agent reported failure: <error> (finished_reason=<reason>)` in `success_details`, even if `agy` exits 0
+- Uses the host's `agy` login, so only `local` and `ssh` targets are supported; `mcps` are rejected (use `agy mcp`)

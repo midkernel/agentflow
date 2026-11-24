@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from agentflow.agents.antigravity import AntigravityAdapter
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
 from agentflow.agents.kimi import KimiAdapter
@@ -630,3 +631,127 @@ def test_pi_adapter_preserves_extra_args(tmp_path):
     prepared = PiAdapter().prepare(node, "Scan", _paths(tmp_path))
 
     assert prepared.command[-2:] == ["--thinking", "high"]
+
+
+def _flag_value(command: list[str], flag: str) -> str:
+    return command[command.index(flag) + 1]
+
+
+def test_antigravity_adapter_uses_agy_print_mode(tmp_path):
+    node = NodeSpec.model_validate({"id": "review", "agent": "antigravity", "prompt": "Review"})
+    prepared = AntigravityAdapter().prepare(node, "Review", _paths(tmp_path))
+
+    assert prepared.command[:3] == ["agy", "--print", "Review"]
+    assert _flag_value(prepared.command, "--output-format") == "stream-json"
+    assert prepared.trace_kind == "antigravity"
+    assert prepared.cwd == str(tmp_path)
+    assert prepared.runtime_files == {}
+
+
+def test_antigravity_adapter_read_only_uses_plan_mode(tmp_path):
+    node = NodeSpec.model_validate({"id": "scan", "agent": "antigravity", "prompt": "Scan", "tools": "read_only"})
+    prepared = AntigravityAdapter().prepare(node, "Scan", _paths(tmp_path))
+
+    assert _flag_value(prepared.command, "--mode") == "plan"
+    assert "--dangerously-skip-permissions" not in prepared.command
+
+
+def test_antigravity_adapter_read_write_skips_permissions(tmp_path):
+    node = NodeSpec.model_validate({"id": "impl", "agent": "antigravity", "prompt": "Implement", "tools": "read_write"})
+    prepared = AntigravityAdapter().prepare(node, "Implement", _paths(tmp_path))
+
+    assert "--dangerously-skip-permissions" in prepared.command
+    assert "--mode" not in prepared.command
+
+
+def test_antigravity_adapter_maps_model_effort_and_timeout(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "review",
+            "agent": "antigravity",
+            "prompt": "Review",
+            "model": "gemini-4-neon-xhigh",
+            "model_settings": {"reasoning_effort": "high"},
+            "timeout_seconds": 5400,
+        }
+    )
+    prepared = AntigravityAdapter().prepare(node, "Review", _paths(tmp_path))
+
+    assert _flag_value(prepared.command, "--model") == "gemini-4-neon-xhigh"
+    assert _flag_value(prepared.command, "--effort") == "high"
+    # agy's own deadline fires shortly before AgentFlow's hard kill.
+    assert _flag_value(prepared.command, "--print-timeout") == "5370s"
+
+
+@pytest.mark.parametrize(("timeout_seconds", "expected"), [(1, "1s"), (20, "19s"), (180, "171s"), (1800, "1770s")])
+def test_antigravity_print_timeout_leaves_grace_before_hard_kill(timeout_seconds, expected):
+    from agentflow.agents.antigravity import antigravity_print_timeout
+
+    assert antigravity_print_timeout(timeout_seconds) == expected
+
+
+def test_antigravity_adapter_rejects_unknown_effort(tmp_path):
+    node = NodeSpec.model_validate(
+        {"id": "review", "agent": "antigravity", "prompt": "Review", "model_settings": {"reasoning_effort": "extreme"}}
+    )
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        AntigravityAdapter().prepare(node, "Review", _paths(tmp_path))
+
+
+def test_antigravity_adapter_rejects_unsupported_model_settings(tmp_path):
+    node = NodeSpec.model_validate(
+        {"id": "review", "agent": "antigravity", "prompt": "Review", "model_settings": {"max_turns": 3}}
+    )
+    with pytest.raises(ValueError, match="does not support model settings: max_turns"):
+        AntigravityAdapter().prepare(node, "Review", _paths(tmp_path))
+
+
+def test_antigravity_adapter_rejects_mcp_servers(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "scan",
+            "agent": "antigravity",
+            "prompt": "Scan",
+            "mcps": [{"name": "demo", "transport": "stdio", "command": "echo"}],
+        }
+    )
+    with pytest.raises(ValueError, match="antigravity adapter does not support `mcps`"):
+        AntigravityAdapter().prepare(node, "Scan", _paths(tmp_path))
+
+
+def test_antigravity_adapter_rejects_docker_targets(tmp_path):
+    node = NodeSpec.model_validate(
+        {"id": "scan", "agent": "antigravity", "prompt": "Scan", "target": {"kind": "docker", "image": "python:3.12"}}
+    )
+    with pytest.raises(ValueError, match="antigravity does not support target docker"):
+        AntigravityAdapter().prepare(node, "Scan", _paths(tmp_path))
+
+
+def test_antigravity_adapter_can_ignore_repo_instructions_with_isolated_runtime_cwd(tmp_path):
+    node = NodeSpec.model_validate(
+        {"id": "review", "agent": "antigravity", "prompt": "Review", "repo_instructions_mode": "ignore"}
+    )
+    prepared = AntigravityAdapter().prepare(node, "Review", _paths(tmp_path))
+
+    assert _flag_value(prepared.command, "--add-dir") == str(tmp_path)
+    assert "--disable-slash-commands" in prepared.command
+    assert prepared.cwd == str(tmp_path / ".runtime")
+    assert prepared.runtime_files.keys() == {".antigravity-cwd"}
+
+
+def test_antigravity_adapter_respects_custom_executable_env_and_extra_args(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "review",
+            "agent": "antigravity",
+            "prompt": "Review",
+            "executable": "/home/me/.local/bin/agy",
+            "env": {"AGY_LOG_LEVEL": "debug"},
+            "extra_args": ["--add-dir", "/data", "--sandbox"],
+        }
+    )
+    prepared = AntigravityAdapter().prepare(node, "Review", _paths(tmp_path))
+
+    assert prepared.command[0] == "/home/me/.local/bin/agy"
+    assert prepared.command[-3:] == ["--add-dir", "/data", "--sandbox"]
+    assert prepared.env == {"AGY_LOG_LEVEL": "debug"}

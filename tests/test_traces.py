@@ -114,3 +114,107 @@ def test_pi_trace_parser_prefers_agent_end_when_present():
         "]}"
     )
     assert parser.finalize() == "final answer"
+
+
+_AGY_INIT = '{"event":"init","conversation_id":"c1","init":{"model":"gemini-4-neon-low","cwd":"/w","tools":["view_file"],"permission_mode":"always-proceed"}}'
+
+
+def test_antigravity_trace_parser_uses_result_response_and_usage():
+    parser = create_trace_parser(AgentKind.ANTIGRAVITY, "ping")
+    parser.feed(_AGY_INIT)
+    parser.feed('{"event":"step_update","step_update":{"conversation_id":"c1","step_index":0,"state":"DONE","step_type":"user_input"}}')
+    deltas = parser.feed('{"event":"step_update","step_update":{"conversation_id":"c1","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"PO"}}')
+    parser.feed('{"event":"step_update","step_update":{"conversation_id":"c1","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"NG\\n","usage":{"input_tokens":9474,"output_tokens":19}}}')
+    events = parser.feed(
+        '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"PONG\\n","duration_seconds":6.2,"num_turns":1,'
+        '"usage":{"input_tokens":9474,"output_tokens":19,"thinking_tokens":16,"cache_read_tokens":0,"total_tokens":9493}}}'
+    )
+
+    assert deltas[0].kind == "assistant_delta"
+    assert deltas[0].content == "PO"
+    assert [event.kind for event in events] == ["result", "usage"]
+    assert events[1].raw["total_tokens"] == 9493
+    assert parser.usage["thinking_tokens"] == 16
+    assert parser.failure is None
+    assert parser.finalize() == "PONG"
+
+
+def test_antigravity_trace_parser_reports_tool_steps():
+    parser = create_trace_parser(AgentKind.ANTIGRAVITY, "scan")
+    call = parser.feed(
+        '{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"read_file",'
+        '"tool_info":{"name":"read_file","parameters":{"Path":"/w/note.txt"}}}}'
+    )
+    done = parser.feed(
+        '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"read_file",'
+        '"tool_info":{"name":"read_file","parameters":{"Path":"/w/note.txt"},"output":"1 lines, 13 bytes"}}}'
+    )
+
+    assert call[0].kind == "tool_call"
+    assert call[0].title == "Tool call: read_file"
+    assert "/w/note.txt" in call[0].content
+    assert done[0].kind == "tool_result"
+    assert done[0].content == "1 lines, 13 bytes"
+
+
+def test_antigravity_trace_parser_marks_print_timeout_as_failure():
+    parser = create_trace_parser(AgentKind.ANTIGRAVITY, "slow")
+    parser.feed(_AGY_INIT)
+    parser.feed('{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"1\\n2\\n"}}')
+    events = parser.feed(
+        '{"event":"result","result":{"conversation_id":"c1","status":"ERROR","response":"",'
+        '"error":"print timeout after 2s with the turn still in progress; the response is partial",'
+        '"duration_seconds":0,"num_turns":1,"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"finished_reason":"print_timeout"}}'
+    )
+
+    assert events[0].kind == "error"
+    assert parser.failure == (
+        "print timeout after 2s with the turn still in progress; the response is partial (finished_reason=print_timeout)"
+    )
+    # Partial streamed text is kept as the final response.
+    assert parser.finalize() == "1\n2"
+
+
+def test_antigravity_trace_parser_marks_error_status_without_error_text():
+    parser = create_trace_parser(AgentKind.ANTIGRAVITY, "bad")
+    parser.feed('{"event":"result","result":{"status":"CANCELLED","response":""}}')
+
+    assert parser.failure == "agy finished with status CANCELLED"
+    assert parser.finalize() == ""
+
+
+def test_antigravity_trace_parser_uses_structured_output_when_response_missing():
+    parser = create_trace_parser(AgentKind.ANTIGRAVITY, "capital")
+    parser.feed('{"event":"result","result":{"status":"SUCCESS","response":"","structured_output":{"capital":"Paris"}}}')
+
+    assert parser.failure is None
+    assert parser.finalize() == '{"capital": "Paris"}'
+
+
+def test_antigravity_trace_parser_resets_between_attempts():
+    parser = create_trace_parser(AgentKind.ANTIGRAVITY, "retry")
+    parser.feed('{"event":"result","result":{"status":"ERROR","response":"","error":"boom"}}')
+    assert parser.failure == "boom"
+
+    parser.start_attempt(2)
+    parser.feed('{"event":"result","result":{"status":"SUCCESS","response":"ok\\n"}}')
+    assert parser.failure is None
+    assert parser.finalize() == "ok"
+
+
+def test_antigravity_trace_parser_reports_tool_errors_and_denied_actions():
+    parser = create_trace_parser(AgentKind.ANTIGRAVITY, "scan")
+    error = parser.feed(
+        '{"event":"step_update","step_update":{"step_index":2,"state":"ERROR","step_type":"tool","tool_name":"write_file",'
+        '"tool_info":{"name":"write_file","error":{"type":"TOOL_ERROR","message":"permission check failed for write_file"}}}}'
+    )
+    events = parser.feed(
+        '{"event":"result","result":{"status":"SUCCESS","response":"",'
+        '"denied_actions":[{"action":"write_file","display_name":"Edit"}]}}'
+    )
+
+    assert error[0].kind == "tool_error"
+    assert "permission check failed" in error[0].content
+    assert [event.kind for event in events] == ["result", "denied_actions"]
+    assert events[1].content == "write_file"
+    assert parser.failure is None

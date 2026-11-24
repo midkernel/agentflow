@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agentflow.agents.antigravity import AntigravityAdapter
 from agentflow.agents.base import AgentAdapter
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
@@ -17,6 +18,7 @@ class AdapterRegistry:
             AgentKind.CLAUDE: ClaudeAdapter(),
             AgentKind.KIMI: KimiAdapter(),
             AgentKind.PI: PiAdapter(),
+            AgentKind.ANTIGRAVITY: AntigravityAdapter(),
             AgentKind.TERMINUS: TerminusAdapter(),
             AgentKind.PYTHON: PythonAdapter(),
             AgentKind.SHELL: ShellAdapter(),

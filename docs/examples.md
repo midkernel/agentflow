@@ -17,3 +17,4 @@
 | `airflow_like.py` | You want the smallest Python-authored DAG reference. | Static dependencies with `plan >> [implement, review]`. |
 | `airflow_like_fuzz_batched.py` | You want a large shard campaign driven by count fanout, batch merge, and a periodic monitor. | `fanout(node, 128)`, `merge(node, src, size=16)`, `schedule.every_seconds`. |
 | `airflow_like_fuzz_grouped.py` | You want a large shard campaign driven by matrix fanout and grouped merge. | `fanout(node, {...})`, `merge(node, src, by=[...])`. |
+| `antigravity_smoke.py` | You want to check that the Google Antigravity (`agy`) backend works on this host. | `antigravity(...)`, `json_schema=`, `success_criteria`; override the model with `AGENTFLOW_ANTIGRAVITY_MODEL`. |

@@ -6,6 +6,7 @@ import pytest
 
 from agentflow import (
     Graph,
+    antigravity,
     InferenceSetup,
     claude,
     codex,
@@ -511,3 +512,49 @@ def test_pi_factory_produces_pi_agent_node():
     rendered = g.to_json()
     loaded = load_pipeline_from_text(rendered, base_dir=Path(__file__).resolve().parents[1])
     assert loaded.nodes[0].agent == "pi"
+
+
+def test_antigravity_factory_translates_convenience_flags():
+    with Graph("antigravity-smoke") as g:
+        antigravity(
+            task_id="capital",
+            prompt="Capital of France?",
+            model="gemini-4-neon-low",
+            effort="low",
+            json_schema={"type": "object", "properties": {"capital": {"type": "string"}}},
+            add_dirs=["/data", "/notes"],
+            sandbox=True,
+            settings={"theme": "dark"},
+            extra_args=["--mode", "auto"],
+        )
+
+    spec = g.to_payload()["nodes"][0]
+    assert spec["agent"] == "antigravity"
+    assert spec["model"] == "gemini-4-neon-low"
+    assert spec["model_settings"] == {"reasoning_effort": "low"}
+    assert spec["extra_args"] == [
+        "--json-schema",
+        '{"type":"object","properties":{"capital":{"type":"string"}}}',
+        "--add-dir",
+        "/data",
+        "--add-dir",
+        "/notes",
+        "--sandbox",
+        "--settings",
+        '{"theme":"dark"}',
+        "--mode",
+        "auto",
+    ]
+
+    loaded = load_pipeline_from_text(g.to_json(), base_dir=Path(__file__).resolve().parents[1])
+    assert loaded.nodes[0].agent == "antigravity"
+    assert loaded.nodes[0].model_settings.reasoning_effort == "low"
+
+
+def test_antigravity_smoke_example_emits_valid_pipeline():
+    pipeline = _run_example("antigravity_smoke.py")
+
+    assert [node.id for node in pipeline.nodes] == ["ping", "capital"]
+    assert {node.agent for node in pipeline.nodes} == {"antigravity"}
+    assert pipeline.node_map["capital"].depends_on == ["ping"]
+    assert "--json-schema" in pipeline.node_map["capital"].extra_args
